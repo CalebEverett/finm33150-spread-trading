@@ -1,0 +1,23 @@
+[[source]]
+name = "pypi"
+url = "https://pypi.org/simple"
+verify_ssl = true
+
+[dev-packages]
+black = "*"
+flake8 = "*"
+pre-commit = "*"
+pytest = "*"
+pytest-cov = "*"
+pynacl = "*"
+gitpython = "*"
+
+[packages]
+canvasapi = "*"
+csci-utils = {editable = true, git = "https://${ACCESS_TOKEN}:x-oauth-basic@github.com/csci-e-29/2021sp-csci-utils-CalebEverett@master"}
+
+[requires]
+python_version = "3.8"
+
+[pipenv]
+allow_prereleases = true

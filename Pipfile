@@ -15,6 +15,16 @@ gitpython = "*"
 [packages]
 canvasapi = "*"
 csci-utils = {editable = true, git = "https://${ACCESS_TOKEN}:x-oauth-basic@github.com/csci-e-29/2021sp-csci-utils-CalebEverett@master"}
+ipykernel = "*"
+matplotlib = "*"
+pandas = "*"
+numpy = "*"
+scipy = "*"
+quandl = "*"
+seaborn = "*"
+plotnine = "*"
+jupyter = "*"
+tqdm = "*"
 
 [requires]
 python_version = "3.8"

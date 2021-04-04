@@ -3,9 +3,24 @@
 
 from unittest import TestCase
 
+from futures_spreads import utils
 
-class PsetTests(TestCase):
-    def test_pset(self):
-        """Test pset."""
 
-        self.assertEqual(True, True)
+class FetchDataTests(TestCase):
+    def test_security_code(self):
+        """Ensure code for security is properly formatted."""
+
+        sec_code = utils.get_security_code("CBT_FV_FV", "OWF", "H2019", "IVM", [1])
+        test_sec_code = ("OWF/CBT_FV_FV_H2019_IVM", {"column_index": [1]})
+
+        self.assertEqual(sec_code, test_sec_code)
+
+
+class PrepDataTests(TestCase):
+    def test_parse_column_label(self):
+        """Ensure column label is parsed correctly."""
+
+        parsed_col = utils.parse_column_label("OWF/CBT_FV_FV_H2019_IVM - Futures")
+        test_parsed_col = ("OWF", "CBT_FV_FV", "H2019", "IVM", "Futures")
+
+        self.assertEqual(parsed_col, test_parsed_col)

@@ -1,13 +1,15 @@
 import hashlib
 import os
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Tuple
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import quandl
-from scipy.stats import norm
+from plotly import colors
+from plotly.subplots import make_subplots
+from scipy import stats
 
 quandl.ApiConfig.api_key = os.getenv("QUANDL_API_KEY")
 
@@ -82,7 +84,7 @@ def fetch_data(
 
 
 # =============================================================================
-# Data Preparation
+# Data Preparation and Analysis
 # =============================================================================
 
 
@@ -172,18 +174,50 @@ def get_spread(
 
 
     Returns:
-        Pandas series of spreadd.
+        Pandas series of spread.
     """
 
     label = label_fn(pair)
     price_1, price_2 = (df[(price_col, sec)] for sec in pair)
 
-    return (price_2 - price_1).rename(label)
+    return (price_2 - price_1).rename(label).dropna()
+
+
+def get_rolling_avg_diffs(
+    pairs: tuple,
+    df: pd.DataFrame,
+    windows: tuple = (30, 90, 180),
+) -> pd.DataFrame:
+    """Calculates differences between a spread and rolling averages of itself.
+
+    Args:
+        pairs: Tuple of two tuples with two str elements, one for each security
+            in the form `{exchange code}_{futures code}_{options_code}`.
+        df: Pandas dataframe with the price data to be plotted. Assumes series
+            are accessible with a tuple of `{(price_col, security)}`.
+        windows: Tuple of integers with the windows for the rolling averages.
+
+    Returns:
+        Pandas DataFrame of differences
+    """
+
+    def get_diffs(pair):
+        spread = get_spread(pair, df).pct_change()
+        df_diffs = pd.concat(
+            [spread - spread.rolling(w).mean() for w in windows], axis=1
+        )
+        tuples = [(spread.name, w) for w in windows]
+        df_diffs.columns = pd.MultiIndex.from_tuples(tuples, names=("spread", "window"))
+        return df_diffs
+
+    return pd.concat([get_diffs(pair) for pair in pairs], axis=1)
 
 
 # =============================================================================
 # Charts
 # =============================================================================
+
+COLORS = colors.qualitative.D3
 
 
 def make_spread_charts(
@@ -221,12 +255,15 @@ def make_spread_charts(
 
     for i, pair in enumerate(pairs):
         for j, security in enumerate(pair):
-            series = df[(price_col, security)]
+            series = df[(price_col, security)].dropna()
             fig.append_trace(
-                go.Scatter(x=df.index, y=series, name=security), row=2 - j, col=2 - i
+                go.Scatter(x=series.index, y=series, name=security),
+                row=2 - j,
+                col=2 - i,
             )
 
-            # Stores the ranges so they can be set consistently for each security.
+            # Stores the ranges so they can be set consistently for each security
+            # in a pair.
             y_ranges[(2 - j, 2 - i)] = (
                 series.max() - series.min(),
                 series.min(),
@@ -243,13 +280,16 @@ def make_spread_charts(
             col=i + 1,
         )
 
-    title_text = f"{title_text}: {df.index.min().strftime(date_fmt)} - {df.index.max().strftime(date_fmt)}"
+    beg_date = df.index.min().strftime(date_fmt)
+    end_date = df.index.max().strftime(date_fmt)
+    title_text = f"{title_text}: {beg_date} - {end_date}"
+
     fig.update_layout(
         template="none", **fig_size, title_text=title_text, showlegend=False
     )
     fig.update_yaxes(tickprefix="$")
 
-    # This makes it so the y ranges of the underlying securities in a pair are the same
+    # Sets y ranges of the underlying securities in a pair to be the same
     # to make it easier to see which movements are causing the spread to change.
     for c in range(1, 3):
         delta = y_ranges[(1, c)][0] - y_ranges[(2, c)][0]
@@ -269,16 +309,200 @@ def make_spread_charts(
     return fig
 
 
+def get_moments_annotation(
+    s: pd.Series, xref: str, yref: str, x: float, y: float
+) -> go.layout.Annotation:
+    """Calculates summary statistics for a series and returns and
+    Annotation object.
+    """
+
+    labels = [
+        ("obs", lambda x: f"{x:>16d}"),
+        ("min:max", lambda x: f"{x[0]:>0.2f}:{x[1]:>0.2f}"),
+        ("mean", lambda x: f"{x:>13.4f}"),
+        ("variance", lambda x: f"{x:>13.4f}"),
+        ("skewness", lambda x: f"{x:>11.4f}"),
+        ("kurtosis", lambda x: f"{x:>13.4f}"),
+    ]
+
+    moments = list(stats.describe(s.to_numpy()))
+
+    return go.layout.Annotation(
+        text=("<br>").join(
+            [f"{k[0]:<10}{k[1](moments[i])}" for i, k in enumerate(labels)]
+        ),
+        align="left",
+        showarrow=False,
+        xref=xref,
+        yref=yref,
+        x=x,
+        y=y,
+        bordercolor="black",
+        borderwidth=1,
+        borderpad=2,
+        bgcolor="white",
+        font=dict(size=10),
+        xanchor="right",
+        yanchor="top",
+    )
+
+
+def get_date_slice_text(
+    date_slice: slice, df: pd.DataFrame, date_fmt: str = "%Y-%m-%d"
+) -> str:
+    """Gets text of date slice.
+
+    Args:
+        date_slice: Slice in a form that can be used to index a
+            pandas DatetimeIndex.
+        df: Dataframe to which date_slice will be applied. Used to get
+            min or max dates if slice is open ended.
+        date_fmt: String formatting to be applied to dates retrieved
+            from df.
+
+    Returns:
+        String in the form of `{start} - {end}` where start and end
+            are in the form specified in date_fmt
+
+    """
+
+    if date_slice.start is None:
+        start = df.index.min().strftime(date_fmt)
+    else:
+        start = date_slice.start
+
+    if date_slice.stop is None:
+        stop = df.index.min().strftime(date_fmt)
+    else:
+        stop = date_slice.start
+
+    return f"{start} - {stop}"
+
+
 def make_tail_charts(
     pairs: tuple,
     df: pd.DataFrame,
     title_text: str,
+    date_slices: Tuple[slice, slice] = None,
     price_col: str = "adj_future",
     date_fmt: str = "%Y-%m-%d",
     fig_size: dict = dict(width=1000, height=500),
 ) -> go.Figure:
     """Returns figure for side-by-side scatter plots of daily returns overlayed on
     the normal distribution with kurtosis statistics.
+
+    Args:
+        pairs: Tuple of two tuples with two str elements, one for each security
+            in the pair of the form `{exchange code}_{futures code}_{options_code}`.
+        df: Pandas dataframe with the price data to be plotted. Assumes series
+            are accessible with a tuple of `{(price_col, security)}`.
+        title_text: Text of overall figure.
+        date_slices: Date ranges for charts, provided in the form of a tuple of slices
+            that can be used to index a Pandas DatetimeIndex. Date range will be
+            removed from the figure title and subplot date ranges added to subplot
+            titles.
+        price_col: Label of column in df by which the prices of the underlying
+            securities are accessible.
+
+    Returns:
+        A plotly Figure ready for plotting
+
+    """
+
+    subplot_titles = tuple(get_spread_label(p) for p in pairs)
+
+    fig = make_subplots(rows=1, cols=2, subplot_titles=subplot_titles)
+
+    for i, pair in enumerate(pairs):
+
+        if date_slices is not None:
+            date_slice = date_slices[i]
+
+            ds_text = get_date_slice_text(date_slice, df)
+            text = f"{subplot_titles[i]}: {ds_text}"
+            fig.layout.annotations[i].update(text=text)
+        else:
+            date_slice = slice(None, None)
+
+        if pairs[0] == pairs[1]:
+            line_color = COLORS[0]
+            normal_line_color = COLORS[1]
+        else:
+            line_color = COLORS[i * 2]
+            normal_line_color = COLORS[i * 2 + 1]
+
+        spread = get_spread(pair, df=df.loc[date_slice], price_col=price_col)
+        returns = pd.cut(spread.pct_change(), 100).value_counts().sort_index()
+        midpoints = returns.index.map(lambda interval: interval.right).to_numpy()
+        norm_dist = stats.norm.pdf(
+            midpoints, loc=spread.pct_change().mean(), scale=spread.pct_change().std()
+        )
+
+        fig.append_trace(
+            go.Scatter(
+                x=[interval.mid for interval in returns.index],
+                y=returns / returns.sum() * 100,
+                name=spread.name,
+                line_color=line_color,
+            ),
+            row=1,
+            col=i + 1,
+        )
+
+        fig.append_trace(
+            go.Scatter(
+                x=[interval.mid for interval in returns.index],
+                y=norm_dist / norm_dist.sum() * 100,
+                name="Normal Distribution",
+                line_color=normal_line_color,
+            ),
+            row=1,
+            col=i + 1,
+        )
+
+        x = midpoints.max() - 0.05 * (midpoints.max() - midpoints.min())
+        y = (returns / returns.sum() * 100).max()
+        fig.add_annotation(
+            get_moments_annotation(
+                spread.pct_change().dropna(), xref=f"x{i+1}", yref=f"y{i+1}", x=x, y=y
+            )
+        )
+
+    if date_slice == slice(None, None):
+        title_text = (
+            f"{title_text}: {df.index.min().strftime(date_fmt)}"
+            f" - {df.index.max().strftime(date_fmt)}"
+        )
+
+    fig.update_layout(
+        template="none",
+        **fig_size,
+        title_text=title_text,
+        showlegend=False,
+    )
+    fig.update_yaxes(tickprefix="%")
+
+    for d in fig["data"]:
+        xaxis = d["xaxis"]
+        xaxis = f"xaxis{xaxis.replace('x', '')}"
+        tickvals = d["x"][::3]
+        fig.update_layout(
+            {xaxis: {"tickmode": "array", "tickvals": tickvals, "tickformat": ".4f"}}
+        )
+
+    return fig
+
+
+def make_qq_charts(
+    pairs: tuple,
+    df: pd.DataFrame,
+    title_text: str,
+    date_slices: Tuple[slice, slice] = None,
+    price_col: str = "adj_future",
+    date_fmt: str = "%Y-%m-%d",
+    fig_size: dict = dict(width=1000, height=500),
+) -> go.Figure:
+    """Returns figure for side-by-side q-q plots of daily returns.
 
     Args:
         pairs: Tuple of two tuples with two str elements, one for each security
@@ -300,45 +524,119 @@ def make_tail_charts(
 
     for i, pair in enumerate(pairs):
 
-        spread = get_spread(pair, df=df, price_col=price_col)
-        returns = pd.cut(spread.pct_change(), 100).value_counts().sort_index()
-        midpoints = returns.index.map(lambda interval: interval.right).to_numpy()
-        norm_dist = norm.pdf(
-            midpoints, loc=spread.pct_change().mean(), scale=spread.pct_change().std()
+        if date_slices is not None:
+            date_slice = date_slices[i]
+
+            ds_text = get_date_slice_text(date_slice, df)
+            text = f"{subplot_titles[i]}: {ds_text}"
+            fig.layout.annotations[i].update(text=text)
+        else:
+            date_slice = slice(None, None)
+
+        if pairs[0] == pairs[1]:
+            line_color = COLORS[0]
+        else:
+            line_color = COLORS[i]
+
+        returns = get_spread(pair, df=df, price_col=price_col).pct_change().dropna()
+
+        returns = returns.loc[date_slice]
+
+        returns_norm = ((returns - returns.mean()) / returns.std()).sort_values()
+        norm_dist = pd.Series(
+            list(map(stats.norm.ppf, np.linspace(0.001, 0.999, len(returns)))),
+            name="normal",
         )
 
         fig.append_trace(
             go.Scatter(
-                x=[interval.mid for interval in returns.index],
-                y=returns,
-                name=spread.name,
+                x=norm_dist,
+                y=returns_norm,
+                name=returns.name,
+                mode="markers",
+                marker=dict(color=line_color),
             ),
             row=1,
             col=i + 1,
         )
 
-        fig.append_trace(
-            go.Scatter(
-                x=[interval.mid for interval in returns.index],
-                y=norm_dist,
-                name="Normal Distribution",
-            ),
-            row=1,
-            col=i + 1,
+        x = norm_dist.min() + 0.3 * (norm_dist.max() - norm_dist.min())
+        y = returns_norm.max()
+        fig.add_annotation(
+            get_moments_annotation(returns, xref=f"x{i+1}", yref=f"y{i+1}", x=x, y=y)
         )
 
-    title_text = f"{title_text}: {df.index.min().strftime(date_fmt)} - {df.index.max().strftime(date_fmt)}"
-    fig.update_layout(
-        template="none", **fig_size, title_text=title_text, showlegend=False
+    if date_slice == slice(None, None):
+        title_text = (
+            f"{title_text}: {df.index.min().strftime(date_fmt)}"
+            f" - {df.index.max().strftime(date_fmt)}"
+        )
+
+    updates = dict(
+        template="none",
+        **fig_size,
+        title_text=title_text,
+        showlegend=False,
     )
-    fig.update_yaxes(tickprefix="")
+    for i in range(1, 3):
+        updates[f"xaxis{i}"] = dict(title="normal")
+        updates[f"yaxis{i}"] = dict(title="returns")
+
+    fig.update_layout(**updates)
 
     for d in fig["data"]:
         xaxis = d["xaxis"]
         xaxis = f"xaxis{xaxis.replace('x', '')}"
-        tickvals = d["x"][::3]
+        tickvals = np.linspace(-3, 3, 7)
         fig.update_layout(
-            {xaxis: {"tickmode": "array", "tickvals": tickvals, "tickformat": ".4f"}}
+            {xaxis: {"tickmode": "array", "tickvals": tickvals, "tickformat": ".2f"}}
         )
+
+    return fig
+
+
+def make_rolling_avg_diff_charts(
+    df: pd.DataFrame,
+    title_text: str,
+    date_fmt: str = "%Y-%m-%d",
+    fig_size: dict = dict(width=1000, height=1000),
+) -> go.Figure:
+    """Returns figure for side-by-side charts of the difference between the spreads and
+    . The spread will be expressed as the second security
+    of the pair less the first one with the second security appearing in top row.
+
+    Args:
+        df: Pandas dataframe with the price data to be plotted. Assumes series
+            are accessible with a tuple of `{(price_col, security)}`.
+        title_text: Text of overall figure.
+
+    Returns:
+        A plotly Figure ready for plotting
+
+    """
+
+    cols, rows = df.columns.levels
+    subplot_titles = [[f"{col} - d{row:03d}" for row in rows] for col in cols]
+    subplot_titles = sum([list(z) for z in zip(*subplot_titles)], [])
+
+    fig = make_subplots(rows=len(rows), cols=len(cols), subplot_titles=subplot_titles)
+
+    for i, col in enumerate(cols):
+        for j, row in enumerate(rows):
+            series = df[(col, row)].dropna()
+            fig.append_trace(
+                go.Scatter(x=series.index, y=series),
+                row=j + 1,
+                col=i + 1,
+            )
+
+    updates = dict(
+        template="none",
+        **fig_size,
+        title_text=title_text,
+        showlegend=False,
+    )
+
+    fig.update_layout(**updates)
 
     return fig

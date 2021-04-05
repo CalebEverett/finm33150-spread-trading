@@ -33,7 +33,7 @@ def get_security_code(
             `{exchange_code}_{options_code}_{futures_code}`
         feed: Quandl data feed code.
         expiration: Expiration of the contract.
-        time_series: Eitehr IVM or IVS.
+        time_series: Either IVM or IVS.
         column_index: List of the indexes of the columns to be fetched.
 
     Returns:
@@ -66,7 +66,7 @@ def fetch_data(
             from.
 
     Returns:
-        Dataframe as returned from Quandle.
+        Dataframe as returned from Quandl.
     """
 
     hash = get_hash(str(query_params))
@@ -186,9 +186,10 @@ def get_spread(
 def get_rolling_avg_diffs(
     pairs: tuple,
     df: pd.DataFrame,
-    windows: tuple = (30, 90, 180),
+    windows: tuple = (30, 90, 180, 360),
 ) -> pd.DataFrame:
-    """Calculates differences between a spread and rolling averages of itself.
+    """Calculates differences between a spread and rolling averages of itself over
+    provided windows.
 
     Args:
         pairs: Tuple of two tuples with two str elements, one for each security
@@ -211,6 +212,34 @@ def get_rolling_avg_diffs(
         return df_diffs
 
     return pd.concat([get_diffs(pair) for pair in pairs], axis=1)
+
+
+def get_rolling_kurts(
+    pairs: tuple,
+    df: pd.DataFrame,
+    windows: tuple = (30, 90, 180, 360),
+) -> pd.DataFrame:
+    """Calculates rolling kurtosis over windows.
+
+    Args:
+        pairs: Tuple of two tuples with two str elements, one for each security
+            in the form `{exchange code}_{futures code}_{options_code}`.
+        df: Pandas dataframe with the price data to be plotted. Assumes series
+            are accessible with a tuple of `{(price_col, security)}`.
+        windows: Tuple of integers with the windows for the rolling kurtosis.
+
+    Returns:
+        Pandas DataFrame of differences
+    """
+
+    def get_kurts(pair):
+        spread = get_spread(pair, df).pct_change().dropna()
+        df_kurts = pd.concat([spread.rolling(w).kurt() for w in windows], axis=1)
+        tuples = [(spread.name, w) for w in windows]
+        df_kurts.columns = pd.MultiIndex.from_tuples(tuples, names=("spread", "window"))
+        return df_kurts
+
+    return pd.concat([get_kurts(pair) for pair in pairs], axis=1)
 
 
 # =============================================================================
@@ -270,10 +299,11 @@ def make_spread_charts(
                 series.max(),
             )
 
+        spread = get_spread(pair, df=df, price_col=price_col)
         fig.append_trace(
             go.Scatter(
-                x=df.index,
-                y=get_spread(pair, df=df, price_col=price_col),
+                x=spread.index,
+                y=spread,
                 name=get_spread_label(pair),
             ),
             row=3,
@@ -320,12 +350,13 @@ def get_moments_annotation(
         ("obs", lambda x: f"{x:>16d}"),
         ("min:max", lambda x: f"{x[0]:>0.2f}:{x[1]:>0.2f}"),
         ("mean", lambda x: f"{x:>13.4f}"),
-        ("variance", lambda x: f"{x:>13.4f}"),
+        ("std", lambda x: f"{x:>15.4f}"),
         ("skewness", lambda x: f"{x:>11.4f}"),
         ("kurtosis", lambda x: f"{x:>13.4f}"),
     ]
 
     moments = list(stats.describe(s.to_numpy()))
+    moments[3] = np.sqrt(moments[3])
 
     return go.layout.Annotation(
         text=("<br>").join(
@@ -372,9 +403,9 @@ def get_date_slice_text(
         start = date_slice.start
 
     if date_slice.stop is None:
-        stop = df.index.min().strftime(date_fmt)
+        stop = df.index.max().strftime(date_fmt)
     else:
-        stop = date_slice.start
+        stop = date_slice.stop
 
     return f"{start} - {stop}"
 
@@ -589,13 +620,13 @@ def make_qq_charts(
         xaxis = f"xaxis{xaxis.replace('x', '')}"
         tickvals = np.linspace(-3, 3, 7)
         fig.update_layout(
-            {xaxis: {"tickmode": "array", "tickvals": tickvals, "tickformat": ".2f"}}
+            {xaxis: {"tickmode": "array", "tickvals": tickvals, "tickformat": ".0f"}}
         )
 
     return fig
 
 
-def make_rolling_avg_diff_charts(
+def make_rolling_charts(
     df: pd.DataFrame,
     title_text: str,
     date_fmt: str = "%Y-%m-%d",
@@ -616,7 +647,7 @@ def make_rolling_avg_diff_charts(
     """
 
     cols, rows = df.columns.levels
-    subplot_titles = [[f"{col} - d{row:03d}" for row in rows] for col in cols]
+    subplot_titles = [[f"{col} - {row:03d}" for row in rows] for col in cols]
     subplot_titles = sum([list(z) for z in zip(*subplot_titles)], [])
 
     fig = make_subplots(rows=len(rows), cols=len(cols), subplot_titles=subplot_titles)

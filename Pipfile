@@ -4,6 +4,7 @@ url = "https://pypi.org/simple"
 verify_ssl = true
 
 [dev-packages]
+canvasapi = "*"
 black = "*"
 flake8 = "*"
 pre-commit = "*"
@@ -11,7 +12,6 @@ pytest = "*"
 pytest-cov = "*"
 
 [packages]
-canvasapi = "*"
 ipykernel = "*"
 pandas = "*"
 numpy = "*"

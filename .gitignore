@@ -77,4 +77,4 @@ docs/_build
 src/*/_version.py
 
 notebooks
-futures_spreads/data/*.*
+submissions

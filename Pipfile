@@ -19,6 +19,7 @@ scipy = "*"
 quandl = "*"
 tqdm = "*"
 plotly = "*"
+gitpython = "*"
 
 [requires]
 python_version = "3.8"

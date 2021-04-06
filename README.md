@@ -1,5 +1,7 @@
 # FINM33150 - Futures Spreads
 
+*See futures_spreads.ipynb* for latest version of copy.
+
 ## Dependencies
 
 Create a virtual environment and install dependencies with

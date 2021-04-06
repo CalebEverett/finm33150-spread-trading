@@ -647,16 +647,39 @@ def make_rolling_charts(
     """
 
     cols, rows = df.columns.levels
-    subplot_titles = [[f"{col} - {row:03d}" for row in rows] for col in cols]
+    subplot_titles = [[f"{col} - {row:02d} days" for row in rows] for col in cols]
     subplot_titles = sum([list(z) for z in zip(*subplot_titles)], [])
 
-    fig = make_subplots(rows=len(rows), cols=len(cols), subplot_titles=subplot_titles)
+    fig = make_subplots(
+        rows=len(rows),
+        cols=len(cols),
+        subplot_titles=subplot_titles,
+        shared_xaxes=True,
+    )
 
+    counter = 0
     for i, col in enumerate(cols):
         for j, row in enumerate(rows):
+            counter += 1
             series = df[(col, row)].dropna()
             fig.append_trace(
-                go.Scatter(x=series.index, y=series),
+                go.Scatter(
+                    x=series.index,
+                    y=series,
+                    name=f"{row:03d} days",
+                    line=dict(color=COLORS[counter - 1]),
+                ),
+                row=j + 1,
+                col=i + 1,
+            )
+
+            fig.append_trace(
+                go.Scatter(
+                    x=series.index,
+                    y=[series.mean()] * len(series),
+                    name="mean",
+                    line=dict(color="black", width=1),
+                ),
                 row=j + 1,
                 col=i + 1,
             )
@@ -667,6 +690,9 @@ def make_rolling_charts(
         title_text=title_text,
         showlegend=False,
     )
+    for i in range(1, len(subplot_titles) + 1):
+        updates[f"xaxis{i}"] = dict(showticklabels=True)
+        updates[f"yaxis{i}"] = dict(showticklabels=True)
 
     fig.update_layout(**updates)
 

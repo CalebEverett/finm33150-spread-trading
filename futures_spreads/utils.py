@@ -1,5 +1,6 @@
 import hashlib
 import os
+from enum import Enum
 from pathlib import Path
 from typing import Callable, Tuple
 
@@ -154,11 +155,17 @@ def get_spread_label(pair: tuple) -> str:
     return f"{pair[0].split('_')[0]}:{pair[1].split('_')[-1]}-{pair[0].split('_')[-1]}"
 
 
+class ReturnType(Enum):
+    LOG: str = "log"
+    SIMPLE: str = "simple"
+
+
 def get_spread(
     pair: tuple,
     df: pd.DataFrame,
     label_fn: Callable = get_spread_label,
     price_col: str = "adj_future",
+    return_type: ReturnType = None,
 ) -> pd.Series:
     """Calculates spread between two series. The spread will be expressed
     as the second security of the pair less the first one.
@@ -171,7 +178,7 @@ def get_spread(
         label_fn: Function that returns a string label for the new series.
         price_col: Label of column in df by which the prices of the underlying
             securities are accessible.
-
+        return_type: Either `log` or `simple` to specify how returns are calculated.
 
     Returns:
         Pandas series of spread.
@@ -179,8 +186,17 @@ def get_spread(
 
     label = label_fn(pair)
     price_1, price_2 = (df[(price_col, sec)] for sec in pair)
+    spread = (price_2 - price_1).rename(label).dropna()
 
-    return (price_2 - price_1).rename(label).dropna()
+    if return_type is not None:
+        return_type = ReturnType(return_type)
+
+    if return_type == ReturnType.LOG:
+        spread = (spread / spread.shift(1)).apply(np.log).dropna()
+    elif return_type == ReturnType.SIMPLE:
+        spread = spread.pct_change().dropna()
+
+    return spread
 
 
 def get_rolling_avg_diffs(
@@ -203,7 +219,7 @@ def get_rolling_avg_diffs(
     """
 
     def get_diffs(pair):
-        spread = get_spread(pair, df).pct_change()
+        spread = get_spread(pair, df, return_type="log")
         df_diffs = pd.concat(
             [spread - spread.rolling(w).mean() for w in windows], axis=1
         )
@@ -218,6 +234,7 @@ def get_rolling_kurts(
     pairs: tuple,
     df: pd.DataFrame,
     windows: tuple = (30, 90, 180, 360),
+    return_type: str = "log",
 ) -> pd.DataFrame:
     """Calculates rolling kurtosis over windows.
 
@@ -227,13 +244,14 @@ def get_rolling_kurts(
         df: Pandas dataframe with the price data to be plotted. Assumes series
             are accessible with a tuple of `{(price_col, security)}`.
         windows: Tuple of integers with the windows for the rolling kurtosis.
+        return_type: Either `log` or `simple` to specify how returns are calculated.
 
     Returns:
         Pandas DataFrame of differences
     """
 
     def get_kurts(pair):
-        spread = get_spread(pair, df).pct_change().dropna()
+        spread = get_spread(pair, df, return_type=return_type)
         df_kurts = pd.concat([spread.rolling(w).kurt() for w in windows], axis=1)
         tuples = [(spread.name, w) for w in windows]
         df_kurts.columns = pd.MultiIndex.from_tuples(tuples, names=("spread", "window"))
@@ -462,12 +480,12 @@ def make_tail_charts(
             line_color = COLORS[i * 2]
             normal_line_color = COLORS[i * 2 + 1]
 
-        spread = get_spread(pair, df=df.loc[date_slice], price_col=price_col)
-        returns = pd.cut(spread.pct_change(), 100).value_counts().sort_index()
-        midpoints = returns.index.map(lambda interval: interval.right).to_numpy()
-        norm_dist = stats.norm.pdf(
-            midpoints, loc=spread.pct_change().mean(), scale=spread.pct_change().std()
+        spread = get_spread(
+            pair, df=df.loc[date_slice], price_col=price_col, return_type="log"
         )
+        returns = pd.cut(spread, 100).value_counts().sort_index()
+        midpoints = returns.index.map(lambda interval: interval.right).to_numpy()
+        norm_dist = stats.norm.pdf(midpoints, loc=spread.mean(), scale=spread.std())
 
         fig.append_trace(
             go.Scatter(
@@ -494,9 +512,7 @@ def make_tail_charts(
         x = midpoints.max() - 0.05 * (midpoints.max() - midpoints.min())
         y = (returns / returns.sum() * 100).max()
         fig.add_annotation(
-            get_moments_annotation(
-                spread.pct_change().dropna(), xref=f"x{i+1}", yref=f"y{i+1}", x=x, y=y
-            )
+            get_moments_annotation(spread, xref=f"x{i+1}", yref=f"y{i+1}", x=x, y=y)
         )
 
     if date_slice == slice(None, None):
@@ -569,9 +585,9 @@ def make_qq_charts(
         else:
             line_color = COLORS[i]
 
-        returns = get_spread(pair, df=df, price_col=price_col).pct_change().dropna()
-
-        returns = returns.loc[date_slice]
+        returns = get_spread(
+            pair, df=df.loc[date_slice], price_col=price_col, return_type="log"
+        )
 
         returns_norm = ((returns - returns.mean()) / returns.std()).sort_values()
         norm_dist = pd.Series(

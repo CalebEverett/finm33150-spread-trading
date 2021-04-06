@@ -234,6 +234,7 @@ def get_rolling_kurts(
     pairs: tuple,
     df: pd.DataFrame,
     windows: tuple = (30, 90, 180, 360),
+    return_type: str = "log",
 ) -> pd.DataFrame:
     """Calculates rolling kurtosis over windows.
 
@@ -243,13 +244,14 @@ def get_rolling_kurts(
         df: Pandas dataframe with the price data to be plotted. Assumes series
             are accessible with a tuple of `{(price_col, security)}`.
         windows: Tuple of integers with the windows for the rolling kurtosis.
+        return_type: Either `log` or `simple` to specify how returns are calculated.
 
     Returns:
         Pandas DataFrame of differences
     """
 
     def get_kurts(pair):
-        spread = get_spread(pair, df).pct_change().dropna()
+        spread = get_spread(pair, df, return_type=return_type)
         df_kurts = pd.concat([spread.rolling(w).kurt() for w in windows], axis=1)
         tuples = [(spread.name, w) for w in windows]
         df_kurts.columns = pd.MultiIndex.from_tuples(tuples, names=("spread", "window"))
@@ -583,9 +585,9 @@ def make_qq_charts(
         else:
             line_color = COLORS[i]
 
-        returns = get_spread(pair, df=df, price_col=price_col, return_type="log")
-
-        returns = returns.loc[date_slice]
+        returns = get_spread(
+            pair, df=df.loc[date_slice], price_col=price_col, return_type="log"
+        )
 
         returns_norm = ((returns - returns.mean()) / returns.std()).sort_values()
         norm_dist = pd.Series(

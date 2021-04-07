@@ -12,12 +12,11 @@ from plotly import colors
 from plotly.subplots import make_subplots
 from scipy import stats
 
-quandl.ApiConfig.api_key = os.getenv("QUANDL_API_KEY")
-
-
 # =============================================================================
 # Quandl
 # =============================================================================
+
+quandl.ApiConfig.api_key = os.getenv("QUANDL_API_KEY")
 
 
 def get_security_code(
@@ -54,9 +53,7 @@ def get_hash(string: str) -> str:
     return hashlib.md5(str(string).encode()).hexdigest()
 
 
-def fetch_data(
-    query_params: dict, data_dir: str = "futures_spreads/data"
-) -> pd.DataFrame:
+def fetch_data(query_params: dict, data_dir: str = ".") -> pd.DataFrame:
     """Takes a dict of query parameters and returns a Pandas DataFrame.
     Will return data from disk if it exists or fetch it from Quandl and
     save it to disk if it doesn't exist.

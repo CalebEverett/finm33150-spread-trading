@@ -155,6 +155,7 @@ def get_spread_label(pair: tuple) -> str:
 class ReturnType(Enum):
     LOG: str = "log"
     SIMPLE: str = "simple"
+    DIFF: str = "diff"
 
 
 def get_spread(
@@ -175,7 +176,8 @@ def get_spread(
         label_fn: Function that returns a string label for the new series.
         price_col: Label of column in df by which the prices of the underlying
             securities are accessible.
-        return_type: Either `log` or `simple` to specify how returns are calculated.
+        return_type: Either `log`, `simple` or `diff` to specify how returns
+            are calculated.
 
     Returns:
         Pandas series of spread.
@@ -192,6 +194,8 @@ def get_spread(
         spread = (spread / spread.shift(1)).apply(np.log).dropna()
     elif return_type == ReturnType.SIMPLE:
         spread = spread.pct_change().dropna()
+    elif return_type == ReturnType.DIFF:
+        spread = spread.diff().dropna()
 
     return spread
 
@@ -200,6 +204,7 @@ def get_rolling_avg_diffs(
     pairs: tuple,
     df: pd.DataFrame,
     windows: tuple = (30, 90, 180, 360),
+    return_type: str = "log",
 ) -> pd.DataFrame:
     """Calculates differences between a spread and rolling averages of itself over
     provided windows.
@@ -210,13 +215,14 @@ def get_rolling_avg_diffs(
         df: Pandas dataframe with the price data to be plotted. Assumes series
             are accessible with a tuple of `{(price_col, security)}`.
         windows: Tuple of integers with the windows for the rolling averages.
+        return_type: Either `log` or `simple` to specify how returns are calculated.
 
     Returns:
         Pandas DataFrame of differences
     """
 
     def get_diffs(pair):
-        spread = get_spread(pair, df, return_type="log")
+        spread = get_spread(pair, df, return_type=return_type)
         df_diffs = pd.concat(
             [spread - spread.rolling(w).mean() for w in windows], axis=1
         )
@@ -320,6 +326,7 @@ def make_spread_charts(
                 x=spread.index,
                 y=spread,
                 name=get_spread_label(pair),
+                line_color=COLORS[i + i * 1],
             ),
             row=3,
             col=i + 1,
@@ -355,7 +362,7 @@ def make_spread_charts(
 
 
 def get_moments_annotation(
-    s: pd.Series, xref: str, yref: str, x: float, y: float
+    s: pd.Series, xref: str, yref: str, x: float, y: float, xanchor: str
 ) -> go.layout.Annotation:
     """Calculates summary statistics for a series and returns and
     Annotation object.
@@ -388,7 +395,7 @@ def get_moments_annotation(
         borderpad=2,
         bgcolor="white",
         font=dict(size=10),
-        xanchor="right",
+        xanchor=xanchor,
         yanchor="top",
     )
 
@@ -433,6 +440,8 @@ def make_tail_charts(
     price_col: str = "adj_future",
     date_fmt: str = "%Y-%m-%d",
     fig_size: dict = dict(width=1000, height=500),
+    return_type: str = "log",
+    moments_xanchors: Tuple[str, str] = ("right", "right"),
 ) -> go.Figure:
     """Returns figure for side-by-side scatter plots of daily returns overlayed on
     the normal distribution with kurtosis statistics.
@@ -449,6 +458,10 @@ def make_tail_charts(
             titles.
         price_col: Label of column in df by which the prices of the underlying
             securities are accessible.
+        return_type: Either `log`, `simple` or `diff` to specify how returns
+            are calculated.
+        moments_xanchors: Tuple of strings of `left` or `right` indicating which side
+            of the charts to display the moments annotation on.
 
     Returns:
         A plotly Figure ready for plotting
@@ -478,7 +491,7 @@ def make_tail_charts(
             normal_line_color = COLORS[i * 2 + 1]
 
         spread = get_spread(
-            pair, df=df.loc[date_slice], price_col=price_col, return_type="log"
+            pair, df=df.loc[date_slice], price_col=price_col, return_type=return_type
         )
         returns = pd.cut(spread, 100).value_counts().sort_index()
         midpoints = returns.index.map(lambda interval: interval.right).to_numpy()
@@ -507,9 +520,18 @@ def make_tail_charts(
         )
 
         x = midpoints.max() - 0.05 * (midpoints.max() - midpoints.min())
+        if moments_xanchors[i] == "left":
+            x = midpoints.min() + 0.05 * (midpoints.max() - midpoints.min())
         y = (returns / returns.sum() * 100).max()
         fig.add_annotation(
-            get_moments_annotation(spread, xref=f"x{i+1}", yref=f"y{i+1}", x=x, y=y)
+            get_moments_annotation(
+                spread,
+                xref=f"x{i+1}",
+                yref=f"y{i+1}",
+                x=x,
+                y=y,
+                xanchor=moments_xanchors[i],
+            )
         )
 
     if date_slice == slice(None, None):
@@ -529,7 +551,7 @@ def make_tail_charts(
     for d in fig["data"]:
         xaxis = d["xaxis"]
         xaxis = f"xaxis{xaxis.replace('x', '')}"
-        tickvals = d["x"][::3]
+        tickvals = d["x"][::5]
         fig.update_layout(
             {xaxis: {"tickmode": "array", "tickvals": tickvals, "tickformat": ".4f"}}
         )
@@ -545,6 +567,7 @@ def make_qq_charts(
     price_col: str = "adj_future",
     date_fmt: str = "%Y-%m-%d",
     fig_size: dict = dict(width=1000, height=500),
+    return_type: str = "log",
 ) -> go.Figure:
     """Returns figure for side-by-side q-q plots of daily returns.
 
@@ -554,8 +577,14 @@ def make_qq_charts(
         df: Pandas dataframe with the price data to be plotted. Assumes series
             are accessible with a tuple of `{(price_col, security)}`.
         title_text: Text of overall figure.
+        date_slices: Date ranges for charts, provided in the form of a tuple of slices
+            that can be used to index a Pandas DatetimeIndex. Date range will be
+            removed from the figure title and subplot date ranges added to subplot
+            titles.
         price_col: Label of column in df by which the prices of the underlying
             securities are accessible.
+        return_type: Either `log`, `simple` or `diff` to specify how returns
+            are calculated.
 
     Returns:
         A plotly Figure ready for plotting
@@ -583,7 +612,7 @@ def make_qq_charts(
             line_color = COLORS[i]
 
         returns = get_spread(
-            pair, df=df.loc[date_slice], price_col=price_col, return_type="log"
+            pair, df=df.loc[date_slice], price_col=price_col, return_type=return_type
         )
 
         returns_norm = ((returns - returns.mean()) / returns.std()).sort_values()
@@ -607,7 +636,9 @@ def make_qq_charts(
         x = norm_dist.min() + 0.3 * (norm_dist.max() - norm_dist.min())
         y = returns_norm.max()
         fig.add_annotation(
-            get_moments_annotation(returns, xref=f"x{i+1}", yref=f"y{i+1}", x=x, y=y)
+            get_moments_annotation(
+                returns, xref=f"x{i+1}", yref=f"y{i+1}", x=x, y=y, xanchor="right"
+            )
         )
 
     if date_slice == slice(None, None):

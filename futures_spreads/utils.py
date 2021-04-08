@@ -326,7 +326,6 @@ def make_spread_charts(
                 x=spread.index,
                 y=spread,
                 name=get_spread_label(pair),
-                line_color=COLORS[i + i * 1],
             ),
             row=3,
             col=i + 1,

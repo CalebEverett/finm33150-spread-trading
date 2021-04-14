@@ -3,7 +3,7 @@
 
 from unittest import TestCase
 
-from futures_spreads import utils
+from spread_trading import utils
 
 # This is really just a start and only include a few items used while writing.
 

@@ -372,6 +372,7 @@ class Position:
     close_price: float = None
     close_transact_cost: float = 0
     closed: bool = False
+    close_date: str = None
 
     @property
     def open_value(self):
@@ -420,8 +421,9 @@ class Strategy:
             a position will be opened if one is not already open.
         close_threshold: Absolute value of difference in returns above which
             a position will be opened if one is not already open.
-        window: Trailing number of days over which to calculate returns for
-            purposes of determining the spread between the two securities.
+        window: Trailing number of days over which the returns for
+            purposes of determining the spread between the two securities were
+            calculated.
         cash: Balance of cash on hand
         gross_profit: Realized gross profit as of `current_date`
         transact_cost: Cash transaction costs incurred as of `current_date`
@@ -437,33 +439,39 @@ class Strategy:
     def __init__(
         self,
         pair: Tuple,
+        ticks: pd.DataFrame,
         open_threshold: float,
         close_threshold: float,
         window: int,
         cash: float = 0,
         gross_profit: float = 0,
         transact_cost: float = 0,
-        start_date: str = None,
         current_date: str = None,
-        end_date: str = None,
         long_position=None,
         short_position=None,
         closed_positions=[],
     ):
 
         self.pair = pair
+        self.ticks = ticks
         self.open_threshold = open_threshold
         self.close_threshold = close_threshold
         self.window = window
         self.cash = cash
         self.gross_profit = gross_profit
         self.transact_cost = transact_cost
-        self.start_date = start_date
         self.current_date = current_date
-        self.end_date = end_date
         self.long_position = long_position
         self.short_position = short_position
         self.closed_positions = closed_positions
+
+        self.start_date = self.ticks.index.min().strftime("%Y-%m-%d")
+        self.end_date = self.ticks.index.max().strftime("%Y-%m-%d")
+        self.month_ends = (
+            pd.date_range(self.start_date, self.end_date, freq="M")
+            .strftime("%Y-%m-%d")
+            .to_list()
+        )
 
     @property
     def net_profit(self):
@@ -481,9 +489,7 @@ class Strategy:
                 f" {str(self.pair)}"
             )
 
-        if self.start_date is None:
-            self.start_date = open_date
-        elif open_date < self.current_date:
+        if open_date < self.current_date:
             raise Exception(
                 f"Position open date of {open_date} is before strategy current"
                 f"date of {self.current_date}"
@@ -554,8 +560,92 @@ class Strategy:
         self.closed_positions.append(self.short_position)
         self.short_position = None
 
-    def end_strategy(self):
-        self.end_date = self.current_date
+    def __iter__(self):
+
+        self.iter_ticks = self.ticks.iterrows()
+        return self
+
+    def __next__(self):
+        tick = next(self.iter_ticks)
+        date, tick = tick
+        self.current_date = date.strftime("%Y-%m-%d")
+        short_security = tick.rolling_adj_return.sort_values().index[-1]
+        long_security = tick.rolling_adj_return.sort_values().index[0]
+
+        # Just testing long position since both long and short positions
+        # are always open or None. Don't open a position on the last day
+        # of the strategy.
+        if (
+            tick.spread[0] > self.open_threshold
+            and self.long_position is None
+            and self.current_date != self.end_date
+        ):
+
+            self.open_long_position(
+                open_date=self.current_date,
+                security=long_security,
+                shares=tick.position_size[long_security],
+                open_price=tick.adj_close[long_security],
+            )
+
+            self.open_short_position(
+                open_date=self.current_date,
+                security=short_security,
+                shares=tick.position_size[short_security],
+                open_price=tick.adj_close[short_security],
+            )
+
+        if (
+            tick.spread[0] < self.close_threshold
+            or self.current_date in self.month_ends
+            or self.current_date == self.end_date
+        ) and self.long_position:
+
+            self.close_long_position(
+                close_date=self.current_date,
+                close_price=tick.adj_close[self.long_position.security],
+            )
+
+            self.close_short_position(
+                close_date=self.current_date,
+                close_price=tick.adj_close[self.short_position.security],
+            )
+
+        return self.gross_profit
+
+
+def get_ticks(pair: Tuple, df: pd.DataFrame, window: int):
+    """Creates table of spread, returns, closing prices and trade amounts to be processed
+    iteratively by a Strategy instance.
+    """
+
+    columns = ["adj_close", "adj_return", "med_dollar_volume"]
+    df_ticks = df.copy().iloc[
+        :,
+        (
+            df.columns.get_level_values(0).isin(columns)
+            & df.columns.get_level_values(1).isin(pair)
+        ),
+    ]
+
+    less_liquid = df_ticks["med_dollar_volume"].sum(axis=0).sort_values().index[0]
+    dollar_position_size = df_ticks[("med_dollar_volume", less_liquid)] / 100
+
+    for S in pair:
+        df_ticks[("position_size", S)] = (
+            dollar_position_size / df_ticks[("adj_close", S)]
+        )
+
+    for S in pair:
+        df_ticks[("rolling_adj_return", S)] = (
+            df_ticks[("adj_return", S)].rolling(window).sum()
+        )
+
+    df_ticks["spread"] = (
+        df_ticks[("adj_return", pair[1])] - df_ticks[("adj_return", pair[0])]
+    ).abs()
+
+    return df_ticks.dropna()
 
 
 # =============================================================================

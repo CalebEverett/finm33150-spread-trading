@@ -356,46 +356,6 @@ def get_rolling_kurts(
 # =============================================================================
 
 
-class TradeType(Enum):
-    OPEN_LONG: str = "open_long"
-    OPEN_SHORT: str = "open_short"
-    CLOSE_LONG: str = "close_long"
-    CLOSE_SHORT: str = "close_short"
-
-
-@dataclass
-class Trade:
-    """Dataclass for keeping track of trades.
-
-    Properties:
-        values are always positive and signs adjusted based on trade type
-    """
-
-    date_str: str
-    trade_type: TradeType
-    security: str
-    shares: int
-    adj_close: float
-
-    @property
-    def trade_value(self):
-        value = self.shares * self.adj_close
-
-        if self.trade_type in (TradeType.OPEN_LONG, TradeType.CLOSE_SHORT):
-            value *= -1
-
-        return value
-
-    @property
-    def trade_shares(self):
-        shares = self.shares
-
-        if self.trade_type in (TradeType.OPEN_SHORT, TradeType.CLOSE_LONG):
-            shares *= -1
-
-        return shares
-
-
 class PositionType(Enum):
     LONG: str = "long"
     SHORT: str = "short"
@@ -412,7 +372,6 @@ class Position:
     close_price: float = None
     close_transact_cost: float = 0
     closed: bool = False
-    carry_cost_per_day: float = 0
 
     @property
     def open_value(self):
@@ -427,9 +386,20 @@ class Position:
         return self.open_transact_cost + self.close_transact_cost
 
     @property
-    def profit(self):
+    def gross_profit(self):
         if self.closed:
-            return self.close_value - self.open_value - self.transact_cost
+            if self.position_type == PositionType.LONG:
+                profit = self.close_value - self.open_value
+            else:
+                profit = self.open_value - self.close_value
+            return profit
+        else:
+            raise Exception("Position is still open")
+
+    @property
+    def net_profit(self):
+        if self.closed:
+            return self.gross_profit - self.transact_cost
         else:
             raise Exception("Position is still open")
 
@@ -439,21 +409,65 @@ class Position:
         self.closed = True
 
 
-@dataclass
 class Strategy:
-    open_threshold: float
-    close_threshold: float
-    window: int
-    securities: Tuple
-    cash: float = 0
-    profit: float = 0
-    start_date: str = None
-    current_date: str = None
-    end_date: str = None
+    """Class for conducting a backtest of a spread trading strategy.
 
-    long_position = None
-    short_position = None
-    closed_positions = []
+    Properties:
+        pair: Tuple of securities
+        ticks: Pandas DataFrame with `adj_close`, `position_size`, and `adj_returns`
+            columns.
+        open_threshold: Absolute value of difference in returns above which
+            a position will be opened if one is not already open.
+        close_threshold: Absolute value of difference in returns above which
+            a position will be opened if one is not already open.
+        window: Trailing number of days over which to calculate returns for
+            purposes of determining the spread between the two securities.
+        cash: Balance of cash on hand
+        gross_profit: Realized gross profit as of `current_date`
+        transact_cost: Cash transaction costs incurred as of `current_date`
+        start_date: Starting date of the strategy
+        current_date: Current date of strategy
+        end_date: str = Ending date of strategy
+
+        long_position = Open long position as of `current_date` if any
+        short_position = Open short position as of `current_date` if any
+        closed_positions = Closed positions as of `current date`
+    """
+
+    def __init__(
+        self,
+        pair: Tuple,
+        open_threshold: float,
+        close_threshold: float,
+        window: int,
+        cash: float = 0,
+        gross_profit: float = 0,
+        transact_cost: float = 0,
+        start_date: str = None,
+        current_date: str = None,
+        end_date: str = None,
+        long_position=None,
+        short_position=None,
+        closed_positions=[],
+    ):
+
+        self.pair = pair
+        self.open_threshold = open_threshold
+        self.close_threshold = close_threshold
+        self.window = window
+        self.cash = cash
+        self.gross_profit = gross_profit
+        self.transact_cost = transact_cost
+        self.start_date = start_date
+        self.current_date = current_date
+        self.end_date = end_date
+        self.long_position = long_position
+        self.short_position = short_position
+        self.closed_positions = closed_positions
+
+    @property
+    def net_profit(self):
+        return self.gross_profit - self.transact_cost
 
     def open_long_position(
         self, open_date: str, security: str, shares: int, open_price
@@ -461,10 +475,10 @@ class Strategy:
         if self.long_position is not None:
             raise Exception("An open long position already exists.")
 
-        if security not in self.securities:
+        if security not in self.pair:
             raise Exception(
                 f"{security} is not included in strategy securities:"
-                f" {str(self.securities)}"
+                f" {str(self.pair)}"
             )
 
         if self.start_date is None:
@@ -487,13 +501,15 @@ class Strategy:
             self.long_position.open_value + self.long_position.open_transact_cost
         )
 
+        self.transact_cost += self.long_position.open_transact_cost
+
     def open_short_position(
         self, open_date: str, security: str, shares: int, open_price
     ):
         if self.short_position is not None:
             raise Exception("An open short position already exists.")
 
-        self.long_position = Position(
+        self.short_position = Position(
             position_type=PositionType.SHORT,
             open_date=open_date,
             security=security,
@@ -502,6 +518,7 @@ class Strategy:
         )
 
         self.cash -= self.short_position.open_transact_cost
+        self.transact_cost -= self.short_position.open_transact_cost
 
     def close_long_position(self, close_date: str, close_price: float):
         if self.long_position is None:
@@ -513,63 +530,32 @@ class Strategy:
             self.long_position.close_value - self.long_position.close_transact_cost
         )
 
-        self.closed_positions.append(self.long_position)
+        self.gross_profit += self.long_position.gross_profit
+        self.transact_cost += self.long_position.close_transact_cost
 
+        self.closed_positions.append(self.long_position)
         self.long_position = None
+
+    def close_short_position(self, close_date: str, close_price: float):
+        if self.short_position is None:
+            raise Exception("There is no open long short.")
+
+        self.short_position.close(close_date, close_price)
+
+        # This assumes no cash is received upon opening the position and that the balance
+        # of the position is settled at close
+        self.cash += (
+            self.short_position.gross_profit - self.short_position.close_transact_cost
+        )
+
+        self.gross_profit += self.short_position.gross_profit
+        self.transact_cost += self.short_position.close_transact_cost
+
+        self.closed_positions.append(self.short_position)
+        self.short_position = None
 
     def end_strategy(self):
         self.end_date = self.current_date
-
-
-@dataclass
-class OldPosition:
-    """Dataclass for keeping track of positions.
-
-    Properties:
-        shares and basis always positive and adjusted in
-    """
-
-    date_str: str
-    security: str
-    adj_close: float = 0.0
-    shares_long: int = 0
-    shares_short: int = 0
-    basis_long: float = 0.0
-    basis_short: float = 0.0
-    cash: float = 0.0
-
-    @property
-    def market_value_long(self):
-        return self.adj_close * self.shares_long
-
-    @property
-    def market_value_short(self):
-        return self.adj_close * self.shares_short * -1
-
-    @property
-    def net_market_value(self):
-        return self.market_value_long + self.market_value_short
-
-    def __call__(self, trade: Trade):
-        if trade.security != self.security or trade.date_str < self.date_str:
-            raise Exception("Invalid Trade.")
-
-        new_position = Position(
-            date_str=trade.date_str,
-            security=self.security,
-            adj_close=trade.adj_close,
-        )
-
-        new_position.cash = self.cash + trade.trade_value
-
-        if trade.trade_type in (TradeType.OPEN_LONG, TradeType.CLOSE_LONG):
-            new_position.shares_long = self.shares_long + trade.shares
-            new_position.basis_long = self.basis_long - trade.trade_value
-        else:
-            new_position.shares_short = self.shares_short + trade.shares
-            new_position.basis_short = self.basis_short - trade.trade_value
-
-        return new_position
 
 
 # =============================================================================

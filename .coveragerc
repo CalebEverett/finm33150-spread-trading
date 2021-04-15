@@ -1,5 +1,5 @@
 [paths]
-source = futures_spreads
+source = spread_trading
 
 [run]
 branch = true

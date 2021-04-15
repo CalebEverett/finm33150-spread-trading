@@ -79,3 +79,4 @@ src/*/_version.py
 notebooks
 submissions
 *.csv
+*.CSV

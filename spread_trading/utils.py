@@ -1,8 +1,10 @@
+from dataclasses import dataclass
+import datetime
 import hashlib
 import os
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Tuple
+from typing import Tuple
 
 import numpy as np
 import pandas as pd
@@ -86,7 +88,29 @@ def fetch_data(query_params: dict, data_dir: str = ".") -> pd.DataFrame:
 # =============================================================================
 
 
-def parse_column_label(c: str) -> tuple:
+def parse_column_label_eod(c: str) -> tuple:
+    """Parses a column label as returned by Quandl into individual data elements
+    to facilitate the flattening of the data.
+
+    Args:
+        c: Column label as returned by Quandl.
+
+    Returns:
+        Tuple with the following elements:
+            feed: Data feed code, i.e., 'EOD'
+            sec: Security of the form `{exchange_code}_{options_code}_{futures_code}`
+            series: Label of the data series, i.e., 'Futures`
+
+    """
+
+    elems = c.split("/")
+    feed = elems[0]
+    sec, series = elems[1].split(" - ")
+
+    return tuple([feed, sec, series])
+
+
+def parse_column_label_owf(c: str) -> tuple:
     """Parses a column label as returned by Quandl into individual data elements
     to facilitate the flattening of the data.
 
@@ -111,33 +135,7 @@ def parse_column_label(c: str) -> tuple:
     return tuple([feed, sec, exp, ts, series])
 
 
-def expand_series(s: pd.Series, date_fmt: str = "%Y-%m-%d") -> pd.DataFrame:
-    """Expand original series reuturned from Quandl to include seprate
-    series for each data element as returned by `parse_column_label.
-
-    Args:
-        s: Original series returned from Quandl
-        date_fmt: String formatting for the date index
-
-    Returns
-        Dataframe with one column for each data element, including
-        the original series.
-    """
-
-    labels = ["data_feed", "security", "expiration", "model", "series"]
-    values = parse_column_label(s.name)
-
-    df_exp = pd.DataFrame({"date": s.index.values})
-    for i, label in enumerate(labels):
-        df_exp[label] = values[i]
-
-    df_exp["value"] = s.values
-    df_exp["series"] = df_exp["series"].str.lower()
-
-    return df_exp
-
-
-def get_spread_label(pair: tuple) -> str:
+def get_spread_label_owf(pair: tuple) -> str:
     """Return labels for spread between two securities in the form
     `{exchange code}:{security_2 futures code}-{security_1 futures code}`
 
@@ -152,30 +150,120 @@ def get_spread_label(pair: tuple) -> str:
     return f"{pair[0].split('_')[0]}:{pair[1].split('_')[-1]}-{pair[0].split('_')[-1]}"
 
 
+def get_spread_label_eod(pair: tuple) -> str:
+    """Return label for a pair for EOD securities
+
+    Args:
+        pairs: Tuples of two security strings.
+
+    Returns:
+        String with label for spread between two securities.
+    """
+
+    return ("-").join(pair)
+
+
+FEED_PARAMS = {
+    "OWF": {
+        "labels": ["data_feed", "security", "expiration", "model", "series"],
+        "parse_fn": parse_column_label_owf,
+        "label_fn": get_spread_label_owf,
+    },
+    "EOD": {
+        "labels": ["data_feed", "security", "series"],
+        "parse_fn": parse_column_label_eod,
+        "label_fn": get_spread_label_eod,
+    },
+}
+
+
+def expand_series(
+    s: pd.Series, data_feed: str, date_fmt: str = "%Y-%m-%d"
+) -> pd.DataFrame:
+    """Expand original series returned from Quandl to include seprate
+    series for each data element as returned by `parse_column_label.
+
+    Args:
+        s: Original series returned from Quandl.
+        data_feed: Quandle data feed code.
+        date_fmt: String formatting for the date index.
+
+    Returns
+        Dataframe with one column for each data element, including
+        the original series.
+    """
+
+    labels = FEED_PARAMS[data_feed]["labels"]
+    parse_fn = FEED_PARAMS[data_feed]["parse_fn"]
+
+    values = parse_fn(s.name)
+
+    df_exp = pd.DataFrame({"date": s.index.values})
+    for i, label in enumerate(labels):
+        df_exp[label] = values[i]
+
+    df_exp["value"] = s.values
+    df_exp["series"] = df_exp["series"].str.lower()
+
+    return df_exp
+
+
 class ReturnType(Enum):
     LOG: str = "log"
     SIMPLE: str = "simple"
     DIFF: str = "diff"
 
 
+def get_returns(
+    df: pd.DataFrame,
+    return_type: ReturnType = "log",
+) -> pd.Series:
+    """Calculates return on a security.
+
+    Args:
+        df: Pandas dataframe with the prices used to calculate returns.
+        return_type: Either `log`, `simple` or `diff` to specify how returns
+            are calculated.
+
+    Returns:
+        Pandas series of return.
+    """
+
+    if return_type is not None:
+        return_type = ReturnType(return_type)
+
+    if return_type == ReturnType.LOG:
+        returns = (df / df.shift(1)).apply(np.log).dropna()
+    elif return_type == ReturnType.SIMPLE:
+        returns = df.pct_change().dropna()
+    elif return_type == ReturnType.DIFF:
+        returns = df.diff().dropna()
+
+    returns.columns = pd.MultiIndex.from_tuples(
+        tuples=[(f"adj_return", security) for security in returns.columns],
+        names=["series", "security"],
+    )
+
+    return returns
+
+
 def get_spread(
     pair: tuple,
     df: pd.DataFrame,
-    label_fn: Callable = get_spread_label,
-    price_col: str = "adj_future",
-    return_type: ReturnType = None,
+    data_feed: str = "EOD",
+    price_col: str = "adj_close",
+    return_type: ReturnType = "log",
 ) -> pd.Series:
     """Calculates spread between two series. The spread will be expressed
     as the second security of the pair less the first one.
 
     Args:
         pair: Tuple of two str elements, one for each security
-            in the form `{exchange code}_{futures code}_{options_code}`.
         df: Pandas dataframe with the price data to be plotted. Assumes series
             are accessible with a tuple of `{(price_col, security)}`.
-        label_fn: Function that returns a string label for the new series.
         price_col: Label of column in df by which the prices of the underlying
             securities are accessible.
+        data_feed: Quandl data feed code.
         return_type: Either `log`, `simple` or `diff` to specify how returns
             are calculated.
 
@@ -183,7 +271,7 @@ def get_spread(
         Pandas series of spread.
     """
 
-    label = label_fn(pair)
+    label = FEED_PARAMS[data_feed]["label_fn"](pair)
     price_1, price_2 = (df[(price_col, sec)] for sec in pair)
     spread = (price_2 - price_1).rename(label).dropna()
 
@@ -264,6 +352,227 @@ def get_rolling_kurts(
 
 
 # =============================================================================
+# Strategy
+# =============================================================================
+
+
+class TradeType(Enum):
+    OPEN_LONG: str = "open_long"
+    OPEN_SHORT: str = "open_short"
+    CLOSE_LONG: str = "close_long"
+    CLOSE_SHORT: str = "close_short"
+
+
+@dataclass
+class Trade:
+    """Dataclass for keeping track of trades.
+
+    Properties:
+        values are always positive and signs adjusted based on trade type
+    """
+
+    date_str: str
+    trade_type: TradeType
+    security: str
+    shares: int
+    adj_close: float
+
+    @property
+    def trade_value(self):
+        value = self.shares * self.adj_close
+
+        if self.trade_type in (TradeType.OPEN_LONG, TradeType.CLOSE_SHORT):
+            value *= -1
+
+        return value
+
+    @property
+    def trade_shares(self):
+        shares = self.shares
+
+        if self.trade_type in (TradeType.OPEN_SHORT, TradeType.CLOSE_LONG):
+            shares *= -1
+
+        return shares
+
+
+class PositionType(Enum):
+    LONG: str = "long"
+    SHORT: str = "short"
+
+
+@dataclass
+class Position:
+    position_type: PositionType
+    open_date: str
+    security: str
+    shares: int
+    open_price: float
+    open_transact_cost: float = 0
+    close_price: float = None
+    close_transact_cost: float = 0
+    closed: bool = False
+    carry_cost_per_day: float = 0
+
+    @property
+    def open_value(self):
+        return self.shares * self.open_price
+
+    @property
+    def close_value(self):
+        return self.shares * self.close_price
+
+    @property
+    def transact_cost(self):
+        return self.open_transact_cost + self.close_transact_cost
+
+    @property
+    def profit(self):
+        if self.closed:
+            return self.close_value - self.open_value - self.transact_cost
+        else:
+            raise Exception("Position is still open")
+
+    def close(self, close_date: str, close_price: float):
+        self.close_date = close_date
+        self.close_price = close_price
+        self.closed = True
+
+
+@dataclass
+class Strategy:
+    open_threshold: float
+    close_threshold: float
+    window: int
+    securities: Tuple
+    cash: float = 0
+    profit: float = 0
+    start_date: str = None
+    current_date: str = None
+    end_date: str = None
+
+    long_position = None
+    short_position = None
+    closed_positions = []
+
+    def open_long_position(
+        self, open_date: str, security: str, shares: int, open_price
+    ):
+        if self.long_position is not None:
+            raise Exception("An open long position already exists.")
+
+        if security not in self.securities:
+            raise Exception(
+                f"{security} is not included in strategy securities:"
+                f" {str(self.securities)}"
+            )
+
+        if self.start_date is None:
+            self.start_date = open_date
+        elif open_date < self.current_date:
+            raise Exception(
+                f"Position open date of {open_date} is before strategy current"
+                f"date of {self.current_date}"
+            )
+
+        self.long_position = Position(
+            position_type=PositionType.LONG,
+            open_date=open_date,
+            security=security,
+            shares=shares,
+            open_price=open_price,
+        )
+
+        self.cash -= (
+            self.long_position.open_value + self.long_position.open_transact_cost
+        )
+
+    def open_short_position(
+        self, open_date: str, security: str, shares: int, open_price
+    ):
+        if self.short_position is not None:
+            raise Exception("An open short position already exists.")
+
+        self.long_position = Position(
+            position_type=PositionType.SHORT,
+            open_date=open_date,
+            security=security,
+            shares=shares,
+            open_price=open_price,
+        )
+
+        self.cash -= self.short_position.open_transact_cost
+
+    def close_long_position(self, close_date: str, close_price: float):
+        if self.long_position is None:
+            raise Exception("There is no open long position.")
+
+        self.long_position.close(close_date, close_price)
+
+        self.cash += (
+            self.long_position.close_value - self.long_position.close_transact_cost
+        )
+
+        self.closed_positions.append(self.long_position)
+
+        self.long_position = None
+
+    def end_strategy(self):
+        self.end_date = self.current_date
+
+
+@dataclass
+class OldPosition:
+    """Dataclass for keeping track of positions.
+
+    Properties:
+        shares and basis always positive and adjusted in
+    """
+
+    date_str: str
+    security: str
+    adj_close: float = 0.0
+    shares_long: int = 0
+    shares_short: int = 0
+    basis_long: float = 0.0
+    basis_short: float = 0.0
+    cash: float = 0.0
+
+    @property
+    def market_value_long(self):
+        return self.adj_close * self.shares_long
+
+    @property
+    def market_value_short(self):
+        return self.adj_close * self.shares_short * -1
+
+    @property
+    def net_market_value(self):
+        return self.market_value_long + self.market_value_short
+
+    def __call__(self, trade: Trade):
+        if trade.security != self.security or trade.date_str < self.date_str:
+            raise Exception("Invalid Trade.")
+
+        new_position = Position(
+            date_str=trade.date_str,
+            security=self.security,
+            adj_close=trade.adj_close,
+        )
+
+        new_position.cash = self.cash + trade.trade_value
+
+        if trade.trade_type in (TradeType.OPEN_LONG, TradeType.CLOSE_LONG):
+            new_position.shares_long = self.shares_long + trade.shares
+            new_position.basis_long = self.basis_long - trade.trade_value
+        else:
+            new_position.shares_short = self.shares_short + trade.shares
+            new_position.basis_short = self.basis_short - trade.trade_value
+
+        return new_position
+
+
+# =============================================================================
 # Charts
 # =============================================================================
 
@@ -274,6 +583,7 @@ def make_spread_charts(
     pairs: tuple,
     df: pd.DataFrame,
     title_text: str,
+    data_feed: str = "EOD",
     price_col: str = "adj_future",
     date_fmt: str = "%Y-%m-%d",
     fig_size: dict = dict(width=1000, height=500),
@@ -296,8 +606,10 @@ def make_spread_charts(
 
     """
 
+    label_fn = FEED_PARAMS[data_feed]["label_fn"]
+
     subplot_titles = (pairs[0][1], pairs[1][1], pairs[0][0], pairs[1][0])
-    subplot_titles += tuple(get_spread_label(p) for p in pairs)
+    subplot_titles += tuple(label_fn(p) for p in pairs)
 
     fig = make_subplots(rows=3, cols=2, subplot_titles=subplot_titles)
 
@@ -325,7 +637,7 @@ def make_spread_charts(
             go.Scatter(
                 x=spread.index,
                 y=spread,
-                name=get_spread_label(pair),
+                name=label_fn(pair),
             ),
             row=3,
             col=i + 1,
@@ -435,6 +747,7 @@ def make_tail_charts(
     pairs: tuple,
     df: pd.DataFrame,
     title_text: str,
+    data_feed: str = "EOD",
     date_slices: Tuple[slice, slice] = None,
     price_col: str = "adj_future",
     date_fmt: str = "%Y-%m-%d",
@@ -451,6 +764,7 @@ def make_tail_charts(
         df: Pandas dataframe with the price data to be plotted. Assumes series
             are accessible with a tuple of `{(price_col, security)}`.
         title_text: Text of overall figure.
+        data_feed: Quandl data feed code.
         date_slices: Date ranges for charts, provided in the form of a tuple of slices
             that can be used to index a Pandas DatetimeIndex. Date range will be
             removed from the figure title and subplot date ranges added to subplot
@@ -467,7 +781,9 @@ def make_tail_charts(
 
     """
 
-    subplot_titles = tuple(get_spread_label(p) for p in pairs)
+    label_fn = FEED_PARAMS[data_feed]["label_fn"]
+
+    subplot_titles = tuple(label_fn(p) for p in pairs)
 
     fig = make_subplots(rows=1, cols=2, subplot_titles=subplot_titles)
 
@@ -562,6 +878,7 @@ def make_qq_charts(
     pairs: tuple,
     df: pd.DataFrame,
     title_text: str,
+    data_feed: str = "EOD",
     date_slices: Tuple[slice, slice] = None,
     price_col: str = "adj_future",
     date_fmt: str = "%Y-%m-%d",
@@ -576,6 +893,7 @@ def make_qq_charts(
         df: Pandas dataframe with the price data to be plotted. Assumes series
             are accessible with a tuple of `{(price_col, security)}`.
         title_text: Text of overall figure.
+        data_feed: Quandl data feed code.
         date_slices: Date ranges for charts, provided in the form of a tuple of slices
             that can be used to index a Pandas DatetimeIndex. Date range will be
             removed from the figure title and subplot date ranges added to subplot
@@ -590,7 +908,9 @@ def make_qq_charts(
 
     """
 
-    subplot_titles = tuple(get_spread_label(p) for p in pairs)
+    label_fn = FEED_PARAMS[data_feed]["label_fn"]
+
+    subplot_titles = tuple(label_fn(p) for p in pairs)
 
     fig = make_subplots(rows=1, cols=2, subplot_titles=subplot_titles)
 

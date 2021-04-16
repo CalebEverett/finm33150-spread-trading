@@ -9,5 +9,3 @@ Create a virtual environment and install dependencies with
 
     pipenv install
 
-## Analysis
-

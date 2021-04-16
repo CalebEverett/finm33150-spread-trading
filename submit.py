@@ -9,10 +9,11 @@ from git import Repo
 repo = Repo(".")
 
 submit_file = Path(f"submissions/ceverett_{repo.head.commit.hexsha[:8]}.ipynb")
+assignment_name = "spread_trading"
 
 
 def write_submit_file():
-    code_file = "spreads_trading.ipynb"
+    code_file = f"{assignment_name}.ipynb"
 
     with open(code_file, "r") as nb:
         nb_json = json.load(nb)
@@ -31,7 +32,7 @@ def write_submit_file():
 
             new_lines = []
             for code_line in cell["source"]:
-                if "from spreads_trading import utils" not in code_line:
+                if f"from {assignment_name} import utils" not in code_line:
                     new_lines.append(code_line.replace("utils.", ""))
 
             nb_json["cells"][i]["source"] = new_lines

@@ -32,7 +32,6 @@ class StrategyTests(TestCase):
             close_threshold=0.0004,
             window=15,
             pair=("SIVR", "SLV"),
-            cash=10000,
         )
 
         self.assertIsNone(strategy.start_date)
@@ -40,7 +39,6 @@ class StrategyTests(TestCase):
         self.assertIsInstance(strategy.long_position, Position)
         self.assertIsNone(strategy.short_position)
         self.assertEqual(strategy.start_date, "2020-10-10")
-        self.assertEqual(strategy.cash, 7500)
 
         del strategy
 

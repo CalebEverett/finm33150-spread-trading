@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
     write_submit_file()
 
-    if False:
+    if True:
         assignment = course.get_assignment(347592)
 
         submission = assignment.submit(

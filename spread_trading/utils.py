@@ -13,6 +13,7 @@ import quandl
 from plotly import colors
 from plotly.subplots import make_subplots
 from scipy import stats
+from tabulate import tabulate
 
 # =============================================================================
 # Quandl
@@ -160,7 +161,7 @@ def get_spread_label_eod(pair: tuple) -> str:
         String with label for spread between two securities.
     """
 
-    return ("-").join(pair)
+    return f"{pair[1]}-{pair[0]}"
 
 
 FEED_PARAMS = {
@@ -396,7 +397,6 @@ class Strategy:
         close_threshold: float,
         window: int,
         closed_positions: list,
-        trades: list,
         run: bool = True,
         transact_cost_per_share: float = 0.01,
     ):
@@ -406,14 +406,12 @@ class Strategy:
         self.open_threshold = open_threshold
         self.close_threshold = close_threshold
         self.window = window
-        self.cash: float = 0
         self.gross_profit: float = 0
         self.transact_cost: float = 0
         self.current_date: str = None
         self.long_position: Position = None
         self.short_position: Position = None
         self.closed_positions = closed_positions
-        self.trades = trades
         self.transact_cost_per_share = transact_cost_per_share
 
         self.start_date = self.df_ticks.index.min().strftime("%Y-%m-%d")
@@ -477,10 +475,6 @@ class Strategy:
             transact_cost_per_share=self.transact_cost_per_share,
         )
 
-        self.cash -= (
-            self.long_position.open_value + self.long_position.open_transact_cost
-        )
-
         self.transact_cost += self.long_position.open_transact_cost
 
     def open_short_position(
@@ -498,7 +492,6 @@ class Strategy:
             transact_cost_per_share=self.transact_cost_per_share,
         )
 
-        self.cash -= self.short_position.open_transact_cost
         self.transact_cost += self.short_position.open_transact_cost
 
     def close_long_position(self, close_date: str, close_price: float):
@@ -506,10 +499,6 @@ class Strategy:
             raise Exception("There is no open long position.")
 
         self.long_position.close(close_date, close_price)
-
-        self.cash += (
-            self.long_position.close_value - self.long_position.close_transact_cost
-        )
 
         self.gross_profit += self.long_position.gross_profit
         self.transact_cost += self.long_position.close_transact_cost
@@ -522,12 +511,6 @@ class Strategy:
             raise Exception("There is no open long short.")
 
         self.short_position.close(close_date, close_price)
-
-        # This assumes no cash is received upon opening the position and that the balance
-        # of the position is settled at close
-        self.cash += (
-            self.short_position.gross_profit - self.short_position.close_transact_cost
-        )
 
         self.gross_profit += self.short_position.gross_profit
         self.transact_cost += self.short_position.close_transact_cost
@@ -542,7 +525,6 @@ class Strategy:
         spread: int,
         long_security: str,
         short_security: str,
-        long_eq: bool = True,
     ):
         if open_position:
             if short_security == self.pair[1]:
@@ -563,7 +545,6 @@ class Strategy:
                 "long_security": long_security,
                 "short_security": short_security,
                 "open_position": open_position,
-                "long_eq": long_eq,
             }
         )
 
@@ -594,7 +575,6 @@ class Strategy:
                 )
                 or self.long_position.security != long_security
             ):
-                long_eq = self.long_position.security == long_security
 
                 self.close_long_position(
                     close_date=self.current_date,
@@ -604,10 +584,6 @@ class Strategy:
                 self.close_short_position(
                     close_date=self.current_date,
                     close_price=tick.adj_close[self.short_position.security],
-                )
-
-                self.record_trade(
-                    False, date, spread, long_security, short_security, long_eq
                 )
 
             if (
@@ -631,8 +607,6 @@ class Strategy:
                     open_price=tick.adj_close[short_security],
                 )
 
-                self.record_trade(True, date, spread, long_security, short_security)
-
             if self.current_date == self.start_date:
                 prior_total_profit = 0
             else:
@@ -645,6 +619,7 @@ class Strategy:
             self.stats.append(
                 {
                     "date": date,
+                    "realized_profit": self.net_profit,
                     "unrealized_profit": self.unrealized_profit,
                     "total_profit": total_profit,
                     "tick_profit": tick_profit,
@@ -653,12 +628,59 @@ class Strategy:
                 }
             )
 
+    def get_day_trades(self, date: str):
+        trades = []
+        headers = ["trans", "sec", "shrs", "price", "profit"]
+        opened_positions = [p for p in self.closed_positions if p.open_date == date]
+        closed_positions = [p for p in self.closed_positions if p.close_date == date]
+
+        for p in opened_positions:
+            trans = "buy" if p.position_type.value == "long" else "short"
+            trades.append([trans, p.security, p.shares, p.open_price, -p.transact_cost])
+
+        for p in closed_positions:
+            trans = "sell" if p.position_type.value == "long" else "cover"
+            trades.append([trans, p.security, p.shares, p.close_price, p.net_profit])
+
+        hover_text = tabulate(
+            trades,
+            tablefmt="plain",
+            headers=headers,
+            floatfmt=("", "", ",.0f", ",.2f", ",.0f"),
+        ).replace("\n", "<br>")
+
+        if opened_positions:
+            long_position = [
+                p for p in opened_positions if p.position_type.value == "long"
+            ][0]
+            if long_position.security == self.pair[0]:
+                trade_type = "short"
+            else:
+                trade_type = "buy"
+        elif closed_positions:
+            long_position = [
+                p for p in closed_positions if p.position_type.value == "long"
+            ][0]
+            if long_position.security == self.pair[0]:
+                trade_type = "buy"
+            else:
+                trade_type = "short"
+
+        size = 6.5 if opened_positions and closed_positions else 4.5
+
+        return (
+            date,
+            self.df_ticks.loc[date].spread.values[0],
+            trade_type,
+            size,
+            hover_text,
+        )
+
     def plot(
         self,
         title_text: str = "Spread Trading Chart",
         data_feed: str = "EOD",
         date_fmt: str = "%Y-%m-%d",
-        fig_size: dict = dict(width=1000, height=500),
     ) -> go.Figure:
         """Returns figure for side-by-side q-q plots of daily returns.
 
@@ -702,7 +724,7 @@ class Strategy:
         )
 
         # =======================
-        # Trades
+        # Spread
         # =======================
 
         fig.append_trace(
@@ -748,25 +770,35 @@ class Strategy:
         add_band()
         add_band(-1)
 
-        if True:
-            df_trades = pd.DataFrame(self.trades)
-            fig.append_trace(
-                go.Scatter(
-                    y=df_trades.spread,
-                    x=df_trades.date,
-                    name="trades",
-                    mode="markers",
-                    marker=dict(
-                        color=df_trades.trade_type.map(
-                            {"buy": "green", "short": "red"}
-                        ),
-                        size=5,
-                        opacity=0.5,
-                    ),
+        # =======================
+        # Trades
+        # =======================
+
+        trade_dates = sorted(
+            sum([[p.open_date, p.close_date] for p in self.closed_positions], [])
+        )
+
+        df_trades = pd.DataFrame(
+            map(self.get_day_trades, trade_dates),
+            columns=["date", "spread", "trans", "marker_size", "text"],
+        )
+
+        fig.append_trace(
+            go.Scatter(
+                y=df_trades.spread,
+                x=df_trades.date,
+                name="trades",
+                mode="markers",
+                marker=dict(
+                    color=df_trades.trans.map({"buy": "green", "short": "red"}),
+                    size=df_trades.marker_size,
+                    line=dict(width=0),
                 ),
-                row=1,
-                col=1,
-            )
+                hovertext=df_trades.text,
+            ),
+            row=1,
+            col=1,
+        )
 
         # =======================
         # Returns
@@ -874,7 +906,7 @@ def get_ticks(pair: Tuple, df: pd.DataFrame, window: int):
     iteratively by a Strategy instance.
     """
 
-    columns = ["adj_close", "adj_return", "med_dollar_volume"]
+    columns = ["adj_close", "adj_return", "med_dollar_volume", "volume"]
     df_ticks = df.copy().iloc[
         :,
         (
@@ -918,7 +950,7 @@ def make_spread_charts(
     data_feed: str = "EOD",
     price_col: str = "adj_future",
     date_fmt: str = "%Y-%m-%d",
-    fig_size: dict = dict(width=1000, height=500),
+    height: int = 600,
 ) -> go.Figure:
     """Returns figure for side-by-side charts of the prices of the underlying
     securities and spreads. The spread will be expressed as the second security
@@ -940,30 +972,29 @@ def make_spread_charts(
 
     label_fn = FEED_PARAMS[data_feed]["label_fn"]
 
-    subplot_titles = (pairs[0][0], pairs[1][0], pairs[0][0], pairs[1][0])
+    subplot_titles = (pairs[0][1], pairs[1][1], pairs[0][0], pairs[1][0])
     subplot_titles += tuple(label_fn(p) for p in pairs)
 
     fig = make_subplots(rows=3, cols=2, subplot_titles=subplot_titles)
 
     y_ranges = {}
 
+    positions = [
+        (pairs[0][1], 1, 1),
+        (pairs[0][0], 2, 1),
+        (pairs[1][1], 1, 2),
+        (pairs[1][0], 2, 2),
+    ]
+
+    for security, row, col in positions:
+        series = df[(price_col, security)].dropna()
+        fig.append_trace(
+            go.Scatter(x=series.index, y=series, name=security),
+            row=row,
+            col=col,
+        )
+
     for i, pair in enumerate(pairs):
-        for j, security in enumerate(pair):
-            series = df[(price_col, security)].dropna()
-            fig.append_trace(
-                go.Scatter(x=series.index, y=series, name=security),
-                row=2 - j,
-                col=2 - i,
-            )
-
-            # Stores the ranges so they can be set consistently for each security
-            # in a pair.
-            y_ranges[(2 - j, 2 - i)] = (
-                series.max() - series.min(),
-                series.min(),
-                series.max(),
-            )
-
         spread = get_spread(pair, df=df, price_col=price_col)
         fig.append_trace(
             go.Scatter(
@@ -980,26 +1011,13 @@ def make_spread_charts(
     title_text = f"{title_text}: {beg_date} - {end_date}"
 
     fig.update_layout(
-        template="none", **fig_size, title_text=title_text, showlegend=False
+        template="none",
+        autosize=True,
+        height=height,
+        title_text=title_text,
+        showlegend=False,
     )
     fig.update_yaxes(tickprefix="$")
-
-    # Sets y ranges of the underlying securities in a pair to be the same
-    # to make it easier to see which movements are causing the spread to change.
-    for c in range(1, 3):
-        delta = y_ranges[(1, c)][0] - y_ranges[(2, c)][0]
-        if delta > 0:
-            new_range = (
-                y_ranges[(2, c)][1] - delta / 2,
-                y_ranges[(2, c)][2] + delta / 2,
-            )
-            fig.update_yaxes(range=new_range, row=2, col=c)
-        else:
-            new_range = (
-                y_ranges[(1, c)][1] + delta / 2,
-                y_ranges[(1, c)][2] - delta / 2,
-            )
-            fig.update_yaxes(range=new_range, row=1, col=c)
 
     return fig
 
@@ -1083,7 +1101,8 @@ def make_tail_charts(
     date_slices: Tuple[slice, slice] = None,
     price_col: str = "adj_future",
     date_fmt: str = "%Y-%m-%d",
-    fig_size: dict = dict(width=1000, height=500),
+    height: int = 450,
+    tick_skip: int = 4,
     return_type: str = "log",
     moments_xanchors: Tuple[str, str] = ("right", "right"),
 ) -> go.Figure:
@@ -1189,7 +1208,8 @@ def make_tail_charts(
 
     fig.update_layout(
         template="none",
-        **fig_size,
+        autosize=True,
+        height=height,
         title_text=title_text,
         showlegend=False,
     )
@@ -1198,7 +1218,7 @@ def make_tail_charts(
     for d in fig["data"]:
         xaxis = d["xaxis"]
         xaxis = f"xaxis{xaxis.replace('x', '')}"
-        tickvals = d["x"][::5]
+        tickvals = d["x"][::tick_skip]
         fig.update_layout(
             {xaxis: {"tickmode": "array", "tickvals": tickvals, "tickformat": ".4f"}}
         )

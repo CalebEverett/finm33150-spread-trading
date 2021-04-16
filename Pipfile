@@ -20,6 +20,8 @@ quandl = "*"
 tqdm = "*"
 plotly = "*"
 gitpython = "*"
+tabulate = "*"
+nbformat = "*"
 
 [requires]
 python_version = "3.8"

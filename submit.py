@@ -55,11 +55,12 @@ if __name__ == "__main__":
 
     write_submit_file()
 
-    assignment = course.get_assignment(347592)
+    if False:
+        assignment = course.get_assignment(347592)
 
-    submission = assignment.submit(
-        dict(
-            submission_type="online_upload",
-        ),
-        file=submit_file,
-    )
+        submission = assignment.submit(
+            dict(
+                submission_type="online_upload",
+            ),
+            file=submit_file,
+        )

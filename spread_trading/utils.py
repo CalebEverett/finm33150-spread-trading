@@ -875,7 +875,9 @@ class Strategy:
                 )
             )
 
-        fig.update_layout(shapes=shapes)
+        fig.update_layout(
+            shapes=shapes, hoverlabel=dict(font_family="Courier New, monospace")
+        )
         fig.update_xaxes(rangebreaks=[dict(values=range_breaks)])
 
         returns_annotation = get_moments_annotation(

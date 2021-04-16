@@ -12,7 +12,7 @@ submit_file = Path(f"submissions/ceverett_{repo.head.commit.hexsha[:8]}.ipynb")
 
 
 def write_submit_file():
-    code_file = "futures_spreads.ipynb"
+    code_file = "spreads_trading.ipynb"
 
     with open(code_file, "r") as nb:
         nb_json = json.load(nb)
@@ -31,7 +31,7 @@ def write_submit_file():
 
             new_lines = []
             for code_line in cell["source"]:
-                if "from futures_spreads import utils" not in code_line:
+                if "from spreads_trading import utils" not in code_line:
                     new_lines.append(code_line.replace("utils.", ""))
 
             nb_json["cells"][i]["source"] = new_lines
@@ -54,7 +54,7 @@ if __name__ == "__main__":
 
     write_submit_file()
 
-    assignment = course.get_assignment(340816)
+    assignment = course.get_assignment(347592)
 
     submission = assignment.submit(
         dict(

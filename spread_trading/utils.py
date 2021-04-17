@@ -794,7 +794,8 @@ class Strategy:
                     size=df_trades.marker_size,
                     line=dict(width=0),
                 ),
-                hovertext=df_trades.text,
+                text=df_trades.text,
+                hovertemplate="%{text}",
             ),
             row=1,
             col=1,
@@ -876,7 +877,9 @@ class Strategy:
             )
 
         fig.update_layout(
-            shapes=shapes, hoverlabel=dict(font_family="Courier New, monospace")
+            shapes=shapes,
+            hoverlabel=dict(font_family="Courier New, monospace"),
+            # hovermode="x unified",
         )
         fig.update_xaxes(rangebreaks=[dict(values=range_breaks)])
 

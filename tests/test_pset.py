@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import datetime
+
 from unittest import TestCase
 
+import pandas as pd
 from spread_trading.utils import Position, PositionType, Strategy
 
 # This is really just a start and only include a few items used while writing.
@@ -25,80 +26,58 @@ class PositionTests(TestCase):
 
 
 class StrategyTests(TestCase):
-    def test_open_long_position(self):
+    def setUp(self):
 
-        strategy = Strategy(
-            open_threshold=0.001,
-            close_threshold=0.0004,
-            window=15,
+        df_ticks = pd.DataFrame(
+            [
+                {"date": "2020-10-10", "adj_close": 25.00, "position_size": 100},
+                {"date": "2020-10-11", "adj_close": 25.00, "position_size": 100},
+            ],
+        )
+        df_ticks.date = pd.to_datetime(df_ticks.date)
+        self.df_ticks = df_ticks.set_index("date")
+
+        self.strategy = Strategy(
             pair=("SIVR", "SLV"),
+            close_threshold=0.0004,
+            open_threshold=0.001,
+            window=15,
+            run=False,
+            closed_positions=[],
+            df_ticks=self.df_ticks,
         )
 
-        self.assertIsNone(strategy.start_date)
-        strategy.open_long_position("2020-10-10", "SIVR", 100, 25.00)
-        self.assertIsInstance(strategy.long_position, Position)
-        self.assertIsNone(strategy.short_position)
-        self.assertEqual(strategy.start_date, "2020-10-10")
+        self.strategy.current_date = "2020-10-10"
 
-        del strategy
+    def test_open_long_position(self):
+        self.strategy.open_long_position("2020-10-10", "SIVR", 100, 25.00)
+        self.assertIsInstance(self.strategy.long_position, Position)
+        self.assertIsNone(self.strategy.short_position)
+        self.assertEqual(self.strategy.start_date, "2020-10-10")
 
     def test_close_long_position(self):
+        self.strategy.open_long_position("2020-10-10", "SIVR", 100, 25.00)
+        self.strategy.close_long_position("2020-10-11", 30.00)
 
-        strategy = Strategy(
-            open_threshold=0.001,
-            close_threshold=0.0004,
-            window=15,
-            pair=("SIVR", "SLV"),
-            cash=10000,
-        )
-
-        strategy.open_long_position("2020-10-10", "SIVR", 100, 25.00)
-        strategy.close_long_position("2020-10-11", 30.00)
-
-        self.assertIsNone(strategy.long_position)
-        self.assertEqual(strategy.cash, 10000 - 2500 + 3000)
-        self.assertEqual(strategy.closed_positions[0].gross_profit, 500)
-        self.assertEqual(strategy.closed_positions[0].close_date, "2020-10-11")
-
-        del strategy
+        self.assertIsNone(self.strategy.long_position)
+        self.assertEqual(self.strategy.closed_positions[0].gross_profit, 500)
+        self.assertEqual(self.strategy.closed_positions[0].close_date, "2020-10-11")
 
     def test_open_short_position(self):
+        self.strategy.open_short_position("2020-10-10", "SIVR", 100, 25.00)
+        self.assertEqual(len(self.strategy.closed_positions), 0)
 
-        strategy = Strategy(
-            open_threshold=0.001,
-            close_threshold=0.0004,
-            window=15,
-            pair=("SIVR", "SLV"),
-            cash=10000,
-        )
-
-        strategy.open_short_position("2020-10-10", "SIVR", 100, 25.00)
-        self.assertEqual(len(strategy.closed_positions), 0)
-
-        self.assertIsInstance(strategy.short_position, Position)
-        self.assertEqual(strategy.short_position.open_value, 2500)
-        self.assertIsNone(strategy.long_position)
-        self.assertEqual(strategy.cash, 10000)
-
-        del strategy
+        self.assertIsInstance(self.strategy.short_position, Position)
+        self.assertEqual(self.strategy.short_position.open_value, 2500)
+        self.assertIsNone(self.strategy.long_position)
 
     def test_close_short_position(self):
+        print(len(self.strategy.closed_positions))
+        self.strategy.open_short_position("2020-10-10", "SIVR", 100, 25.00)
+        self.assertEqual(len(self.strategy.closed_positions), 0)
+        self.strategy.close_short_position("2020-10-11", 30.00)
 
-        strategy = Strategy(
-            pair=("SIVR", "SLV"),
-            open_threshold=0.001,
-            close_threshold=0.0004,
-            window=15,
-            cash=10000,
-        )
-
-        print(len(strategy.closed_positions))
-        strategy.open_short_position("2020-10-10", "SIVR", 100, 25.00)
-        self.assertEqual(len(strategy.closed_positions), 0)
-        strategy.close_short_position("2020-10-11", 30.00)
-
-        self.assertEqual(strategy.cash, 9500)
-        self.assertEqual(strategy.gross_profit, -500)
-        self.assertEqual(len(strategy.closed_positions), 1)
-        self.assertEqual(strategy.closed_positions[-1].gross_profit, -500)
-        self.assertEqual(strategy.closed_positions[-1].close_date, "2020-10-11")
+        self.assertEqual(self.strategy.gross_profit, -500)
+        self.assertEqual(len(self.strategy.closed_positions), 1)
+        self.assertEqual(self.strategy.closed_positions[-1].gross_profit, -500)
+        self.assertEqual(self.strategy.closed_positions[-1].close_date, "2020-10-11")

@@ -22,6 +22,11 @@ plotly = "*"
 gitpython = "*"
 tabulate = "*"
 nbformat = "*"
+matplotlib = "*"
+seaborn = "*"
+plotnine = "*"
+statsmodels = "*"
+jinja2 = "*"
 
 [requires]
 python_version = "3.8"
